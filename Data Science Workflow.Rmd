@@ -1,0 +1,547 @@
+---
+title: "Data Science Workflow"
+author: "JMKlein"
+date: '2022-10-19'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<center>
+![ ](CB.jpg)
+</center>
+
+```{r setup1, echo = FALSE, include=FALSE}
+library(tidycensus)
+library(tidyverse)
+library(readxl)
+```
+
+Call API Key and tidyverse logo:
+
+```{r}
+#census_api_key("YOUR KEY GOES HERE",
+               #overwrite = FALSE, install = TRUE)
+
+tidyverse_logo()
+
+```
+
+## Research question: How does the Annual Survey of Jails sampled data compare to the Correctional data published by Census?
+
+## Exploration {.tabset .tabset-pills}
+
+### Get Data
+
+Census Data
+
+We want to get data from Census.gov, lets display available variables below
+
+Viewing 2020 variables
+
+```{r}
+vars20 <- load_variables(2020, "pl")
+
+#print(vars20, n = 301)
+
+#View(vars20)
+
+head(vars20)
+
+tail(vars20)
+```
+
+Viewing 2010 variables
+
+```{r}
+vars10 <- load_variables(2010, "sf1")
+
+#print(vars10, n = 9099)
+
+#View(vars10)
+
+head(vars10)
+
+tail(vars10)
+```
+
+Get and view decennial data from 2020
+
+```{r}
+pop20 <- get_decennial(
+  geography = "state",
+  variables = "P1_001N",
+  year = 2020) %>%
+  mutate(year = 2020, variable = "population")
+
+pop20
+```
+
+Get and view decennial data from 2010
+
+```{r}
+pop10 <- get_decennial(
+  geography = "state",
+  variables = "H001001",
+  year = 2010) %>%
+  mutate(year = 2010, variable = "population")
+
+pop10
+```
+
+Getting institutional and correctional counts from Census.gov
+
+```{r}
+Inst20 <- get_decennial(
+  geography = "state",
+  variables = "P5_002N",
+  year = 2020) %>%
+  mutate(year = 2020, variable = "institutional")
+
+Corr20 <- get_decennial(
+  geography = "state",
+  variables = "P5_003N",
+  year = 2020) %>%
+  mutate(year = 2020, variable = "correctional")
+
+Inst10 <- get_decennial(
+  geography = "state",
+  variables = "P029027",
+  year = 2010) %>%
+  mutate(year = 2010, variable = "institutional")
+
+Corr10 <- get_decennial(
+  geography = "state",
+  variables = "P042003",
+  year = 2010) %>%
+  mutate(year = 2010, variable = "correctional")
+
+glimpse(Inst20)
+
+glimpse(Corr20)
+
+glimpse(Inst10)
+
+glimpse(Corr10)
+```
+
+Let's look at ACS variables from 2015, note it does not contain institutionalized or correctional pop data
+
+```{r}
+all_vars_acs5 <-
+  load_variables(year = 2015, dataset = "acs5")
+
+glimpse(all_vars_acs5)
+
+head(all_vars_acs5)
+
+tail(all_vars_acs5)
+```
+
+We do want to get the 2015 population data
+
+```{r}
+acs15 <- get_acs(
+  geography = "state",
+  variables = "B00001_001",
+  year = 2015) %>%
+  rename(value = "estimate") %>%
+  mutate(year = 2015, variable = "population")
+
+head(acs15)
+```
+
+Let's combine our Census data
+
+```{r}
+Pop <- rbind(pop20, pop10)
+
+Corr <- rbind(Corr20, Corr10)
+
+Inst <- rbind(Inst20, Inst10)
+
+Census <- rbind(Pop, Corr)
+
+Census <- rbind(Census, Inst)
+
+Census <- rbind(Census, acs15) %>%
+  select(GEOID, NAME, value, year, variable)
+
+glimpse(Census)
+
+head(Census)
+```
+
+Annual Survey of Jails Data
+
+Get supplemental data from Annual Survey of Jails (ASJ)
+
+```{r setup2, echo = FALSE, include=FALSE}
+load("C:/Users/klein337/Desktop/Data Science Workflow/38408-0001-Data.rda")
+
+ASJ20 <- da38408.0001
+
+load("C:/Users/klein337/Desktop/Data Science Workflow/36760-0001-Data.rda")
+
+ASJ15 <- da36760.0001
+
+ASJ10 <- read_excel("C:/Users/klein337/Desktop/Data Science Workflow/31261-0001-Data.xlsx")
+```
+
+```{r}
+str(ASJ20)
+
+str(ASJ15)
+
+str(ASJ10)
+```
+
+Keep the important variables- state and peak population for this purpose
+
+```{r}
+ASJ20 <- ASJ20 %>%
+  select(STATE, PEAKPOP)
+
+ASJ15 <- ASJ15 %>%
+  select(STATE, PEAKPOP)
+
+ASJ10 <- ASJ10 %>%
+  select(state, peakpop)
+```
+
+How many facilities appear in each state?
+
+```{r}
+ASJ20State <- as.data.frame(table(ASJ20$STATE)) %>%
+  rename(State = "Var1", Fac20 = "Freq")
+
+ASJ15State <- as.data.frame(table(ASJ15$STATE)) %>%
+  rename(Var15 = "Var1", Fac15 = "Freq")
+
+ASJ10State <- as.data.frame(table(ASJ10$state)) %>%
+  rename(Var10 = "Var1", Fac10 = "Freq")
+
+ASJStates <- cbind(ASJ20State, ASJ15State) %>%
+  select(-c(Var15)) %>%
+  slice(-2)
+
+ASJStates <- cbind(ASJStates, ASJ10State) %>%
+  select(-c(Var10))
+
+ASJStates
+```
+Note: notice not every state is in there; CT/VT/HI/RI/DE, with 0 in AK
+
+### Transform Data
+
+To keep diving into our research question, we want to join ASJ data with Census data.Some transforming, cleaning and joining is required
+
+Lets start by looking at the population in the Annual Survey of Jails, with variable peak pop (peak population)
+
+Getting the peak population during June 2020, December 2015 and June 2010 from ASJ (RM: June, December, June)
+
+```{r}
+ASJPeakpop20 <- ASJ20 %>%
+  group_by(STATE) %>%
+  summarise(TotalPeakpop = sum(PEAKPOP)) %>%
+  rename(value = TotalPeakpop) %>%
+  rename(NAME = STATE) %>%
+  mutate(year = 2020, variable = "peak population")
+
+ASJPeakpop15 <- ASJ15 %>%
+  group_by(STATE) %>%
+  summarise(PeakPop = sum(PEAKPOP, na.rm = TRUE)) %>%
+  rename(value = PeakPop) %>%
+  rename(NAME = STATE) %>%
+  mutate(year = 2015, variable = "peak population")
+
+ASJPeakpop10 <- ASJ10 %>%
+  group_by(state) %>%
+  summarise(PeakPop = sum(peakpop, na.rm = TRUE)) %>%
+  rename(value = PeakPop) %>%
+  rename(NAME = state) %>%
+  mutate(year = 2010, variable = "peak population")
+
+glimpse(ASJPeakpop20)
+
+glimpse(ASJPeakpop15)
+
+glimpse(ASJPeakpop10)
+```
+
+We notice the states need to be made consistent in 2010 to match the other years
+
+```{r}
+head(ASJPeakpop20$NAME)
+
+head(ASJPeakpop15$NAME)
+
+head(ASJPeakpop10$NAME)
+
+ASJPeakpop10$STATE <- ASJPeakpop15$NAME
+
+ASJPeakpop10 <- ASJPeakpop10 %>%
+  select(c(-NAME)) %>%
+  rename(NAME = STATE) %>%
+  select(NAME, value, year, variable)
+
+glimpse(ASJPeakpop10)
+```
+
+Combine the peak population data into a tidy dataset
+
+```{r}
+ASJPeakPop <- rbind(ASJPeakpop20, ASJPeakpop15)
+
+ASJPeakPop <- rbind(ASJPeakPop, ASJPeakpop10)
+```
+
+Remove the parenthesis 
+
+```{r}
+ASJPeakPop$NAME <- gsub("[()]", "", ASJPeakPop$NAME)
+
+ASJPeakPop <- ASJPeakPop %>%
+  separate(NAME, c('GEOID', 'NAME'),
+           extra = "merge", fill = "left")
+
+glimpse(ASJPeakPop)
+
+glimpse(Census)
+```
+
+Once both data frames are in the same format, you can join them
+
+```{r}
+PopData <- rbind(ASJPeakPop, Census)
+
+glimpse(PopData)
+```
+
+Which states/rows have no correctional data?
+
+```{r}
+NOASJ <- as.data.frame(table(PopData$NAME))
+
+NOASJ %>%
+  filter(Freq < 10)
+```
+
+Drop rows with no correctional data
+
+```{r}
+PopData <- as.data.frame(PopData) %>%
+  filter(!NAME  %in% c('Alaska', 'Connecticut', 'Delaware', 'Hawaii', 'Puerto Rico', 'Rhode Island', 'Vermont'))
+```
+
+What are we left to work with?
+
+```{r}
+table(PopData$NAME)
+
+table(PopData$year)
+
+table(PopData$variable)
+```
+
+Let's put our Pop dataset to the side for a minute. Let's start small with looking at the Census 2020 adults in correctional facilities population by state, and add percent of total
+
+Get the count of adults in correctional facilities by state and create a percent of total column
+
+```{r}
+Corr_population <- get_decennial(
+  geography = "state",
+  variables = "P5_003N",
+  year = 2020,
+  output = "wide") %>%
+  mutate(percent = 100 * (P5_003N / sum(P5_003N)))
+
+Corr_population %>%
+  arrange(desc(percent))
+
+Corr_population %>%
+  arrange(percent)
+```
+
+Calculate the percent of adults in correctional facilities in each state
+
+```{r}
+Corr_populationState <- get_decennial(
+  geography = "state",
+  variables = (c("P5_003N","P1_001N")),
+  year = 2020,
+  output = "wide") %>%
+  group_by(NAME) %>%
+  mutate(percent = 100 * (P5_003N / P1_001N))
+
+Corr_populationState %>%
+  arrange(desc(percent))
+
+Corr_populationState %>%
+  arrange(percent)
+```
+
+If the data is too big to visualize, you can subset it
+
+```{r}
+CorrTop <- Corr_populationState %>%
+  arrange(desc(percent)) %>%
+  head(10)
+
+CorrBottom <- Corr_populationState %>%
+  arrange(desc(percent)) %>%
+  tail(10)
+
+CorrPopSub <- rbind(CorrTop, CorrBottom)
+
+glimpse(CorrPopSub)
+```
+
+
+### Visualize
+
+Create a histogram of adults in corrections
+
+```{r histo}
+ggplot(Corr_populationState, aes(x = percent )) +
+  geom_histogram(fill ='dark green', col = 'red', bins = 10)
+```
+
+Create a boxplot of adult correctional population by state size, but we must add a size variable first
+
+```{r boxplot}
+Corr_populationStateSize <- Corr_populationState %>%
+  mutate(size_bin = case_when(P1_001N < 1000000 ~ 'small',
+                              P1_001N >= 1000000 & P1_001N <= 10000000 ~ 'medium',
+                              P1_001N > 10000000 ~ 'large'))
+
+ggplot(Corr_populationStateSize, aes(x = size_bin, y = percent)) +
+  geom_boxplot(color = 'blue', outlier.color = 'red')
+```
+
+Create a bar chart of adult correctional population
+
+```{r bargraph}
+ggplot(Corr_populationStateSize, aes(x = reorder(NAME, percent), y = percent, fill = size_bin)) +
+  geom_col() +
+  theme(axis.text.x = element_text(angle=90,hjust=1,vjust=0.5, size = 6))+
+  coord_flip()+
+  labs(title = "Correctional Population by State, 2020",
+       x = "State",
+       y = "Percent of Adults in Correctional Facilities",
+       fill = "Size of State")
+```
+
+Create a scatterplot of correctional population
+
+```{r scatterplot}
+ggplot(Corr_populationStateSize, aes(x = reorder(NAME, percent), y = percent, color = size_bin)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle=90,hjust=1,vjust=0.5, size = 6))+
+  coord_flip()+
+  labs(title = "Adults in Correctional Facilities by State, 2020",
+       x = "State",
+       y = "Percent of Adults in Corrections",
+       fill = "Size of State")
+```
+
+Create a scatterplot of adult correctional population with regression line 
+
+```{r lm}
+options(scipen = 999) # Disable scientific notation
+
+ggplot(Corr_populationStateSize, aes(x = P1_001N,y = P5_003N, color = size_bin)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  theme(axis.text.x = element_text(angle=90,hjust=1,vjust=0.5, size = 6))+
+  labs(title = "Adults in Correctional Facilities by State, 2020",
+       x = "Population Count",
+       y = "Adults in Corrections",
+       fill = "Size of State")
+```
+
+Using ggplot with facets
+
+Lets bring our population dataset back.
+First add percent of variable, group by variable and year
+
+```{r}
+PopData <- PopData %>%
+  group_by(variable, year) %>%
+  mutate(percent = 100 * (value/sum(value)))
+```
+
+Bar chart by category, with all states, combining years
+
+```{r bar pop}
+ggplot(PopData, aes(x=NAME, y=percent, fill = as.factor(year)))+
+  geom_col()+
+  labs(x = "State",
+       y = "Percent of Population",
+       fill = "Year") +
+  theme(axis.text.x = element_text(angle=90,hjust=.2,vjust=0.5, size = 6))+
+  facet_wrap(~variable)
+```
+
+Next we want to create a bargraph faceted by variable group, including only top states, separating years
+
+First assign a unique rank, take the top 6 states of each variable, and keep only those states
+
+```{r}
+PopData <- PopData %>%
+  group_by(variable, year) %>%
+  mutate(rank = dense_rank(desc(value)))
+
+PopDataTop6 <- PopData %>%
+  filter(rank <= 6)
+
+table(PopDataTop6$NAME)
+
+PopDataTop6 <- PopData %>%
+  filter(NAME  %in% c('Arizona', 'California', 'Florida', 'Georgia', 'Illinois', 'Louisiana', 'Michigan', 'New York', 'Ohio', 'Pennsylvania', 'Tennessee', 'Texas', 'Virginia'))
+
+table(PopDataTop6$NAME)
+```
+
+Lets visualize a few different combinations and see which graph answers our question best
+
+Create a bar chart by variable group
+
+```{r facet by var}
+ggplot(PopDataTop6, aes(x=NAME, y=percent))+
+  geom_col()+
+  ylab("Percent of Pop")+
+  facet_wrap(variable~year) +
+  theme(axis.text.x = element_text(angle=90,hjust=.2,vjust=0.5, size = 6))
+```
+
+Create a stacked bar chart, all variable groups combined
+
+```{r stacked}
+ggplot(PopDataTop6, aes(x=year, y=percent))+
+  geom_col(aes(fill = variable))+
+  ylab("Percent of Pop")+
+  theme(axis.text.x = element_text(angle=90,hjust=.2,vjust=0.5, size = 6))
+```
+
+Create a grouped bar chart, by year
+
+```{r grouped year}
+ggplot(PopDataTop6, aes(x=year, y=percent))+
+  geom_bar(aes(fill = variable), stat = "identity", position ="dodge")+
+  ylab("Percent of Pop")+
+  theme(axis.text.x = element_text(angle=90,hjust=.2,vjust=0.5, size = 6))
+```
+
+Create a grouped bar chart, by variable group
+
+```{r grouped var}
+ggplot(PopDataTop6, aes(x=variable, y=percent))+
+  geom_bar(aes(fill = as.factor(year)), stat = "identity", position ="dodge")+
+  ylab("Percent of Pop")+
+  theme(axis.text.x = element_text(angle=90,hjust=.2,vjust=0.5, size = 6))
+```
+
+
